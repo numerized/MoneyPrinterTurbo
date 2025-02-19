@@ -59,126 +59,123 @@ def combine_videos(
     audio_clip = AudioFileClip(audio_file)
     audio_duration = audio_clip.duration
     logger.info(f"max duration of audio: {audio_duration} seconds")
-    # Required duration of each clip
-    req_dur = audio_duration / len(video_paths)
-    req_dur = max_clip_duration
-    logger.info(f"each clip will be maximum {req_dur} seconds long")
+    
     output_dir = os.path.dirname(combined_video_path)
-
     aspect = VideoAspect(video_aspect)
     video_width, video_height = aspect.to_resolution()
 
+    # Create clips list for final video
     clips = []
     video_duration = 0
-
-    raw_clips = []
+    
+    # If random mode, shuffle the video paths first
+    if video_concat_mode.value == VideoConcatMode.random.value:
+        video_paths = random.sample(video_paths, len(video_paths))
+    
+    # Process each video file - take only one segment from each
     for video_path in video_paths:
+        # Stop if we have enough duration
+        if video_duration >= audio_duration:
+            break
+            
         clip = VideoFileClip(video_path).without_audio()
         clip_duration = clip.duration
-        start_time = 0
-
-        while start_time < clip_duration:
+        
+        # Take a segment from the video
+        if clip_duration > max_clip_duration:
+            # For longer videos, take a random segment
+            max_start = max(0, clip_duration - max_clip_duration)
+            start_time = random.uniform(0, max_start)
             end_time = min(start_time + max_clip_duration, clip_duration)
-            split_clip = clip.subclipped(start_time, end_time)
-            raw_clips.append(split_clip)
-            # logger.info(f"splitting from {start_time:.2f} to {end_time:.2f}, clip duration {clip_duration:.2f}, split_clip duration {split_clip.duration:.2f}")
-            start_time = end_time
-            if video_concat_mode.value == VideoConcatMode.sequential.value:
-                break
+            clip = clip.subclipped(start_time, end_time)
+        elif clip_duration < 1:  # Skip very short clips
+            clip.close()
+            continue
+            
+        clip = clip.with_fps(30)
+        
+        # Resize clip if needed
+        clip_w, clip_h = clip.size
+        if clip_w != video_width or clip_h != video_height:
+            clip_ratio = clip.w / clip.h
+            video_ratio = video_width / video_height
 
-    # random video_paths order
-    if video_concat_mode.value == VideoConcatMode.random.value:
-        random.shuffle(raw_clips)
-
-    # Add downloaded clips over and over until the duration of the audio (max_duration) has been reached
-    while video_duration < audio_duration:
-        for clip in raw_clips:
-            # Check if clip is longer than the remaining audio
-            if (audio_duration - video_duration) < clip.duration:
-                clip = clip.subclipped(0, (audio_duration - video_duration))
-            # Only shorten clips if the calculated clip length (req_dur) is shorter than the actual clip to prevent still image
-            elif req_dur < clip.duration:
-                clip = clip.subclipped(0, req_dur)
-            clip = clip.with_fps(30)
-
-            # Not all videos are same size, so we need to resize them
-            clip_w, clip_h = clip.size
-            if clip_w != video_width or clip_h != video_height:
-                clip_ratio = clip.w / clip.h
-                video_ratio = video_width / video_height
-
-                if clip_ratio == video_ratio:
-                    # Resize proportionally
-                    clip = clip.resized((video_width, video_height))
+            if clip_ratio == video_ratio:
+                clip = clip.resized((video_width, video_height))
+            else:
+                if clip_ratio > video_ratio:
+                    scale_factor = video_width / clip_w
                 else:
-                    # Resize proportionally
-                    if clip_ratio > video_ratio:
-                        # Resize proportionally based on the target width
-                        scale_factor = video_width / clip_w
-                    else:
-                        # Resize proportionally based on the target height
-                        scale_factor = video_height / clip_h
+                    scale_factor = video_height / clip_h
 
-                    new_width = int(clip_w * scale_factor)
-                    new_height = int(clip_h * scale_factor)
-                    clip_resized = clip.resized(new_size=(new_width, new_height))
+                new_width = int(clip_w * scale_factor)
+                new_height = int(clip_h * scale_factor)
+                clip_resized = clip.resized(new_size=(new_width, new_height))
 
-                    background = ColorClip(
-                        size=(video_width, video_height), color=(0, 0, 0)
-                    )
-                    clip = CompositeVideoClip(
-                        [
-                            background.with_duration(clip.duration),
-                            clip_resized.with_position("center"),
-                        ]
-                    )
-
-                logger.info(
-                    f"resizing video to {video_width} x {video_height}, clip size: {clip_w} x {clip_h}"
+                background = ColorClip(
+                    size=(video_width, video_height), color=(0, 0, 0)
+                )
+                clip = CompositeVideoClip(
+                    [
+                        background.with_duration(clip.duration),
+                        clip_resized.with_position("center"),
+                    ]
                 )
 
-            shuffle_side = random.choice(["left", "right", "top", "bottom"])
-            logger.info(f"Using transition mode: {video_transition_mode}")
-            if video_transition_mode.value == VideoTransitionMode.none.value:
-                clip = clip
-            elif video_transition_mode.value == VideoTransitionMode.fade_in.value:
-                clip = video_effects.fadein_transition(clip, 1)
-            elif video_transition_mode.value == VideoTransitionMode.fade_out.value:
-                clip = video_effects.fadeout_transition(clip, 1)
-            elif video_transition_mode.value == VideoTransitionMode.slide_in.value:
-                clip = video_effects.slidein_transition(clip, 1, shuffle_side)
-            elif video_transition_mode.value == VideoTransitionMode.slide_out.value:
-                clip = video_effects.slideout_transition(clip, 1, shuffle_side)
-            elif video_transition_mode.value == VideoTransitionMode.shuffle.value:
-                transition_funcs = [
-                    lambda c: video_effects.fadein_transition(c, 1),
-                    lambda c: video_effects.fadeout_transition(c, 1),
-                    lambda c: video_effects.slidein_transition(c, 1, shuffle_side),
-                    lambda c: video_effects.slideout_transition(c, 1, shuffle_side),
-                ]
-                shuffle_transition = random.choice(transition_funcs)
-                clip = shuffle_transition(clip)
-
-            if clip.duration > max_clip_duration:
-                clip = clip.subclipped(0, max_clip_duration)
-
-            clips.append(clip)
-            video_duration += clip.duration
+        # Apply transitions
+        shuffle_side = random.choice(["left", "right", "top", "bottom"])
+        if video_transition_mode.value == VideoTransitionMode.none.value:
+            pass
+        elif video_transition_mode.value == VideoTransitionMode.fade_in.value:
+            clip = video_effects.fadein_transition(clip, 1)
+        elif video_transition_mode.value == VideoTransitionMode.fade_out.value:
+            clip = video_effects.fadeout_transition(clip, 1)
+        elif video_transition_mode.value == VideoTransitionMode.slide_in.value:
+            clip = video_effects.slidein_transition(clip, 1, shuffle_side)
+        elif video_transition_mode.value == VideoTransitionMode.slide_out.value:
+            clip = video_effects.slideout_transition(clip, 1, shuffle_side)
+        elif video_transition_mode.value == VideoTransitionMode.shuffle.value:
+            transition_funcs = [
+                lambda c: video_effects.fadein_transition(c, 1),
+                lambda c: video_effects.fadeout_transition(c, 1),
+                lambda c: video_effects.slidein_transition(c, 1, shuffle_side),
+                lambda c: video_effects.slideout_transition(c, 1, shuffle_side),
+            ]
+            shuffle_transition = random.choice(transition_funcs)
+            clip = shuffle_transition(clip)
+        
+        clips.append(clip)
+        video_duration += clip.duration
+    
+    # Combine all clips
+    if not clips:
+        logger.error("No valid clips found")
+        return ""
+        
     clips = [CompositeVideoClip([clip]) for clip in clips]
     video_clip = concatenate_videoclips(clips)
     video_clip = video_clip.with_fps(30)
-    logger.info("writing")
-    # https://github.com/harry0703/MoneyPrinterTurbo/issues/111#issuecomment-2032354030
+    
+    # If video is longer than audio, trim it
+    if video_clip.duration > audio_duration:
+        video_clip = video_clip.subclipped(0, audio_duration)
+    
+    # Write the final video
+    logger.info(f"writing video to {combined_video_path}")
     video_clip.write_videofile(
-        filename=combined_video_path,
+        combined_video_path,
+        codec="libx264",
+        audio=False,
         threads=threads,
+        preset="ultrafast",
         logger=None,
-        temp_audiofile_path=output_dir,
-        audio_codec="aac",
-        fps=30,
     )
     video_clip.close()
-    logger.success("completed")
+    
+    # Clean up
+    for clip in clips:
+        clip.close()
+    
     return combined_video_path
 
 
