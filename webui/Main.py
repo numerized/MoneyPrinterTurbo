@@ -24,6 +24,7 @@ from app.models.schema import (
     VideoTransitionMode,
 )
 from app.services import llm, voice
+from app.services import subtitle
 from app.services import task as tm
 from app.utils import utils
 
@@ -772,79 +773,90 @@ with right_panel:
         with stroke_cols[1]:
             params.stroke_width = st.slider(tr("Stroke Width"), 0.0, 10.0, 1.5)
 
-start_button = st.button(tr("Generate Video"), use_container_width=True, type="primary")
+start_button = st.button(tr("Generate"), type="primary")
 if start_button:
-    config.save_config()
     task_id = str(uuid4())
-    if not params.video_subject and not params.video_script:
-        st.error(tr("Video Script and Subject Cannot Both Be Empty"))
-        scroll_to_bottom()
+
+    if params.video_source == "local" and not uploaded_files:
+        st.error(tr("Please upload video files first"))
         st.stop()
 
-    if params.video_source not in ["pexels", "pixabay", "local"]:
-        st.error(tr("Please Select a Valid Video Source"))
-        scroll_to_bottom()
-        st.stop()
-
-    if params.video_source == "pexels" and not config.app.get("pexels_api_keys", ""):
-        st.error(tr("Please Enter the Pexels API Key"))
-        scroll_to_bottom()
-        st.stop()
-
-    if params.video_source == "pixabay" and not config.app.get("pixabay_api_keys", ""):
-        st.error(tr("Please Enter the Pixabay API Key"))
-        scroll_to_bottom()
-        st.stop()
-
-    if uploaded_files:
-        local_videos_dir = utils.storage_dir("local_videos", create=True)
+    if params.video_source == "local":
+        params.video_materials = []
         for file in uploaded_files:
-            file_path = os.path.join(local_videos_dir, f"{file.file_id}_{file.name}")
-            with open(file_path, "wb") as f:
-                f.write(file.getbuffer())
-                m = MaterialInfo()
-                m.provider = "local"
-                m.url = file_path
-                if not params.video_materials:
-                    params.video_materials = []
-                params.video_materials.append(m)
+            temp_file = tempfile.NamedTemporaryFile(delete=False)
+            temp_file.write(file.getvalue())
+            temp_file.close()
+            material_info = MaterialInfo()
+            material_info.url = temp_file.name
+            params.video_materials.append(material_info)
 
-    log_container = st.empty()
-    log_records = []
+    with st.spinner(tr("Generating...")):
+        # First step: Generate script and terms
+        video_script = tm.generate_script(task_id, params)
+        if not video_script:
+            st.stop()
+        
+        video_terms = tm.generate_terms(task_id, params, video_script)
+        if not video_terms:
+            st.stop()
+        
+        # Save script data
+        tm.save_script_data(task_id, video_script, video_terms, params)
+        
+        # Generate audio
+        audio_result = tm.generate_audio(task_id, params, video_script)
+        if not audio_result:
+            st.stop()
+        
+        audio_file_path, audio_duration, sub_maker = audio_result
+                
+        # Generate subtitle if enabled
+        subtitle_path = ""
+        if params.subtitle_enabled:
+            subtitle_path = tm.generate_subtitle(
+                task_id, params, video_script, sub_maker, audio_file_path
+            )
+        
+        # New step: Preview and select videos
+        from VideoPreview import download_and_preview_videos
+        
+        st.write("### Step 1: Select Videos")
+        st.write("First, let's download and preview the videos. You can select which ones to use in the final video.")
+        
+        selected_videos = download_and_preview_videos(task_id, params, video_terms)
+        
+        if selected_videos is None:
+            st.stop()
+        
+        # Final step: Generate video with selected clips
+        st.write("### Step 2: Generate Final Video")
+        if st.button("Generate Final Video", type="primary"):
+            final_video_paths = tm.generate_final_videos(
+                task_id, params, selected_videos, audio_file_path, subtitle_path
+            )
+            
+            if not final_video_paths:
+                st.stop()
 
-    def log_received(msg):
-        if config.ui["hide_log"]:
-            return
-        with log_container:
-            log_records.append(msg)
-            st.code("\n".join(log_records))
-
-    logger.add(log_received)
-
-    st.toast(tr("Generating Video"))
-    logger.info(tr("Start Generating Video"))
-    logger.info(utils.to_json(params))
-    scroll_to_bottom()
-
-    result = tm.start(task_id=task_id, params=params)
-    if not result or "videos" not in result:
-        st.error(tr("Video Generation Failed"))
-        logger.error(tr("Video Generation Failed"))
-        scroll_to_bottom()
-        st.stop()
-
-    video_files = result.get("videos", [])
-    st.success(tr("Video Generation Completed"))
-    try:
-        if video_files:
-            player_cols = st.columns(len(video_files) * 2 + 1)
-            for i, url in enumerate(video_files):
-                player_cols[i * 2 + 1].video(url)
-    except Exception:
-        pass
-
-    open_task_folder(task_id)
-    logger.info(tr("Video Generation Completed"))
-    scroll_to_bottom()
-
-config.save_config()
+            st.success(tr("Video generated successfully!"))
+            
+            # Display download buttons for the generated videos
+            for i, video_path in enumerate(final_video_paths, 1):
+                video_filename = os.path.basename(video_path)
+                with open(video_path, "rb") as f:
+                    st.download_button(
+                        label=f"Download Video {i}",
+                        data=f,
+                        file_name=video_filename,
+                        mime="video/mp4",
+                    )
+            
+            if platform.system() == "Windows":
+                st.button(
+                    tr("Open Folder"),
+                    on_click=open_task_folder,
+                    args=(task_id,),
+                )
+    
+    config.save_config()

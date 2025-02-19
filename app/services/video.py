@@ -4,7 +4,7 @@ import random
 from typing import List
 
 from loguru import logger
-from moviepy import (
+from moviepy.editor import (
     AudioFileClip,
     ColorClip,
     CompositeAudioClip,
@@ -12,7 +12,6 @@ from moviepy import (
     ImageClip,
     TextClip,
     VideoFileClip,
-    afx,
     concatenate_videoclips,
 )
 from moviepy.video.tools.subtitles import SubtitlesClip
