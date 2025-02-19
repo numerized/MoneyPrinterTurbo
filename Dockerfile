@@ -14,6 +14,8 @@ RUN apt-get update && apt-get install -y \
     git \
     imagemagick \
     ffmpeg \
+    libgl1-mesa-glx \
+    python3-opencv \
     && rm -rf /var/lib/apt/lists/*
 
 # Fix security policy for ImageMagick
@@ -24,6 +26,16 @@ COPY requirements.txt ./
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Install moviepy and its dependencies separately with compatible versions
+RUN pip install --no-cache-dir \
+    moviepy==1.0.3 \
+    decorator==4.4.2 \
+    imageio==2.31.1 \
+    imageio-ffmpeg==0.4.8 \
+    tqdm==4.65.0 \
+    proglog==0.1.10 \
+    requests==2.31.0
 
 # Now copy the rest of the codebase into the image
 COPY . .
