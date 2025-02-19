@@ -12,6 +12,10 @@ services:
     command: [ "streamlit", "run", "./webui/Main.py","--browser.serverAddress=127.0.0.1","--server.enableCORS=True","--browser.gatherUsageStats=False" ]
     volumes: *common-volumes
     restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 120g
   api:
     build:
       context: .
@@ -22,3 +26,7 @@ services:
     command: [ "python3", "main.py" ]
     volumes: *common-volumes
     restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 120g
